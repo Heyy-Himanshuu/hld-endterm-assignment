@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Search Typeahead</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="hero">
+      <h1>Search Typeahead</h1>
+      <p class="tagline">Type to see the top 10 suggestions, ranked by popularity &amp; recency.</p>
+    </header>
+
+    <!-- Ranking-mode toggle: lets you demonstrate basic vs enhanced ranking live -->
+    <div class="mode-toggle" role="radiogroup" aria-label="Ranking mode">
+      <label><input type="radio" name="mode" value="enhanced" checked /> Enhanced (recency-aware)</label>
+      <label><input type="radio" name="mode" value="basic" /> Basic (all-time count)</label>
+    </div>
+
+    <!-- Search box + suggestions dropdown -->
+    <div class="search-wrap">
+      <div class="search-box">
+        <input
+          id="search"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Search for anything…"
+          aria-label="Search"
+          aria-expanded="false"
+          aria-controls="suggestions"
+          role="combobox"
+        />
+        <button id="search-btn" type="button">Search</button>
+      </div>
+      <ul id="suggestions" class="suggestions" role="listbox" hidden></ul>
+      <div id="suggest-status" class="suggest-status" aria-live="polite"></div>
+    </div>
+
+    <!-- Dummy search response -->
+    <section id="response" class="response" hidden></section>
+
+    <!-- Trending searches -->
+    <section class="trending">
+      <h2>🔥 Trending now</h2>
+      <ol id="trending-list" class="trending-list">
+        <li class="empty">No activity yet — run a few searches.</li>
+      </ol>
+    </section>
+
+    <footer class="footer">
+      <span id="last-stat" class="stat"></span>
+    </footer>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

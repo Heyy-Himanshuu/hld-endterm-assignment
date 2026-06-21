@@ -1,0 +1,24 @@
+{
+  "name": "search-typeahead",
+  "version": "1.0.0",
+  "description": "Search Typeahead System with distributed cache (consistent hashing), trending searches, and batch writes — HLD end-term assignment",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dataset": "node scripts/download-dataset.js",
+    "ingest": "node scripts/ingest.js",
+    "setup": "node scripts/download-dataset.js && node scripts/ingest.js",
+    "benchmark": "node scripts/benchmark.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.1.0"
+  }
+}
