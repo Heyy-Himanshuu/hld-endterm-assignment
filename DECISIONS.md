@@ -259,3 +259,214 @@ A: (1) The Trie's per-node top-K means a low-all-time-count but surging query ca
 prefix suggestions until its count grows (mitigated by /trending). (2) In-process cache isn't
 fault-isolated. (3) No fsync = tiny durability window. All three are documented and have
 clear production upgrades.
+
+---
+
+## 10. High-Level Design (HLD) viva question bank — subject concepts
+
+This section maps the project to the **HLD / system-design concepts** an examiner will
+test. Each answer states the concept, then how this project applies it (and what you'd
+do at real scale). This is the "design Autocomplete / Typeahead" interview, grounded in
+code you actually wrote.
+
+### 10.1 Requirements & scope
+
+**Q: What are the functional vs non-functional requirements of a typeahead system?**
+- **Functional:** as the user types a prefix, return the top-N (here 10) matching
+  suggestions ranked by popularity (and recency); record searches; surface trending.
+- **Non-functional:** **very low latency** (suggestions must feel instant, < ~100 ms
+  end-to-end, ideally < 10 ms server-side), **high availability** (slightly stale
+  suggestions are acceptable — favors AP), **scalability** (read-heavy), **eventual
+  consistency** of counts, and cost efficiency.
+
+**Q: Is this system read-heavy or write-heavy?**
+A: **Read-heavy.** Every keystroke (debounced) is a read; searches are far fewer. So we
+optimize the read path hardest (in-memory Trie + cache, 0 DB reads/request) and make the
+write path cheap and asynchronous (batching). This read/write asymmetry is the single most
+important driver of the architecture.
+
+### 10.2 Back-of-the-envelope estimation (capacity planning)
+
+**Q: Do a rough capacity estimate for a large autocomplete service.**
+A: Suppose 5B searches/day ≈ ~58k searches/sec. Each search is ~4–6 keystrokes that each
+fire a (debounced) suggest call → say 5× → **~300k suggest QPS** average, multiply by ~2–3
+for peak → ~1M QPS peak. Storage: ~100B distinct historical queries is unrealistic; we keep
+only the **top few hundred million** weighted phrases (long tail is pruned). A trie of a few
+hundred million phrases is tens of GB → **sharded across many machines and held in RAM**.
+Bandwidth: each response ~ a few hundred bytes × QPS. The point of the estimate: reads
+dominate, the working set fits in RAM if pruned, and we must shard.
+
+### 10.3 High-level architecture at scale
+
+**Q: Draw the production architecture (beyond this single process).**
+A: `Client (debounce) → CDN/edge cache → Load balancer → stateless Suggest servers
+(hold trie shards in RAM) → Distributed cache (Redis cluster) → ` and a **separate write
+pipeline**: `search events → message queue (Kafka) → stream/batch aggregators → updates the
+weighted trie (offline build) → pushed to suggest servers`. This project collapses all of
+that into one Node process, but the *roles* map 1:1 (Express = LB+app, DistributedCache =
+Redis cluster, SearchService buffer/WAL = the Kafka+aggregator pipeline, SQLite = the
+durable store / offline build input).
+
+**Q: Why keep the suggest servers stateless?**
+A: Statelessness lets a load balancer send any request to any server and lets you scale
+horizontally by just adding machines. The state (the trie) is a read-only replica rebuilt
+from the source of truth, so losing a server loses no data.
+
+### 10.4 Data structures — Trie and alternatives
+
+**Q: Why a Trie for autocomplete, and what are the alternatives?**
+A: Autocomplete is a **prefix-match** problem; a trie gives **O(L)** prefix lookup
+independent of corpus size and naturally groups completions under a prefix node.
+Alternatives: (a) a **sorted list + binary search** on prefix ranges (works, but top-K
+needs sorting); (b) **DB `LIKE 'pre%'`** with an index (simple, but scans/sorts per query
+and won't hit RAM speed); (c) **ternary search tree** (memory-friendlier trie variant);
+(d) **FST / DAWG** (compressed automaton — what Lucene/Elasticsearch use for suggesters).
+We precompute **top-K per node** so the answer is ready without scanning subtrees.
+
+**Q: How would you shard a trie that doesn't fit on one machine?**
+A: Partition by prefix. Simplest: shard on the **first 1–2 characters** (or a hash of the
+prefix) so all completions of a prefix live on one shard → a single-shard lookup.
+**Problem: skew** — common prefixes ("a", "th") get huge/hot shards. Fixes: split hot
+prefixes further, replicate hot shards, or route by a balanced hash. This is exactly the
+*hot-key / hotspot* problem from the sharding topic.
+
+### 10.5 Caching — strategies, eviction, failure modes
+
+**Q: Which caching strategy is this — cache-aside, write-through, or write-back?**
+A: The read path is **cache-aside (lazy loading)**: on a miss we compute from the Trie and
+populate the cache. The write path to the DB is effectively **write-back (write-behind)**:
+searches are buffered and flushed in batches rather than written through synchronously.
+Knowing these names is classic HLD viva fodder.
+
+**Q: What eviction policy do you use and what are the options?**
+A: Each cache node uses **LRU** (oldest-inserted evicted first via Map ordering) plus a
+**TTL**. Options: **LRU** (recency), **LFU** (frequency — better for stable hot sets),
+**FIFO**, **random**, **TTL-only**. LRU + TTL is the common default for suggestion caches.
+
+**Q: What is a cache stampede / thundering herd, and does your design have it?**
+A: When a hot key expires, many concurrent requests all miss and hit the backend at once.
+At scale you mitigate with **single-flight/locking** (one request recomputes, others wait),
+**probabilistic early recomputation**, or **stale-while-revalidate**. In this project a
+"backend miss" is just a microsecond Trie walk, so the herd is harmless — but I'd call out
+the mitigation for a real Redis+DB setup.
+
+**Q: Hot keys — what if one prefix ("a") gets a huge share of traffic?**
+A: Consistent hashing balances keys across nodes but a *single* hot key still lands on one
+node. Fixes: replicate hot keys across multiple nodes, add a small per-server local cache in
+front (we effectively have an L1 by serving from RAM), or key-splitting. This is the
+hot-partition problem again, at the cache layer.
+
+### 10.6 Consistent hashing (the headline HLD topic)
+
+**Q: Explain consistent hashing and why it beats `hash % N`.**
+A: Map both nodes and keys onto a hash ring [0, 2^32); a key is owned by the next node
+clockwise. With `hash % N`, changing N remaps ~**all** keys (mass cache miss, rebalancing
+storm). With the ring, adding/removing a node only remaps the keys on **that node's arc** —
+about **K/N** keys move. This is what makes elastic scaling and node failure cheap.
+
+**Q: What are virtual nodes and why are they essential?**
+A: With one point per node, arc lengths (load shares) are uneven and removing a node dumps
+its entire arc onto a single neighbor. Giving each physical node **many virtual points**
+(~100–200) spreads its share across the ring → even load, smooth rebalancing, and support
+for **heterogeneous** nodes (give bigger machines more vnodes). Measured here: 5.2% max
+deviation across 3 nodes with 150 vnodes.
+
+**Q: Where is consistent hashing used in real systems?**
+A: Amazon **DynamoDB**, **Cassandra**, **Riak** (data partitioning), **memcached** clients
+(ketama), CDNs and L7 load balancers (e.g. Google **Maglev**), and sharded caches — anywhere
+you partition data/traffic across a changing set of nodes.
+
+**Q: What happens to your data when a cache node dies?**
+A: Its keys' next requests become misses and get recomputed onto the surviving node the ring
+now routes them to — graceful degradation, no correctness loss (cache is rebuildable). In a
+*data* store you'd pair the ring with **replication** (store each key on the next R nodes).
+
+### 10.7 Databases — SQL/NoSQL, sharding, replication
+
+**Q: SQL vs NoSQL for the primary store here, and at scale?**
+A: For the assignment, SQLite (relational) is plenty — single key (`query`), simple counts.
+At scale a **key-value / wide-column store** (DynamoDB, Cassandra) fits better: the access
+pattern is point lookups/increments by query key, it shards horizontally, and we don't need
+joins or strong multi-row transactions. The choice follows the **access pattern**, not habit.
+
+**Q: How do you scale the database for reads and writes?**
+A: **Reads:** add **read replicas** (async replication) and front with cache — but here the
+Trie removes per-request reads entirely. **Writes:** **batch** (this project, 200× fewer
+writes), **shard/partition** by query key to spread write load, and use a queue to absorb
+spikes. **Replication** gives availability; **sharding** gives write throughput.
+
+**Q: Sync vs async replication trade-off?**
+A: Sync = no data loss on failover but higher write latency and reduced availability under
+partition; async = fast and available but a failover can lose the last few writes. For
+search-count analytics, **async** is the right call (a few lost counts don't matter).
+
+### 10.8 CAP, consistency, and the write pipeline
+
+**Q: Where does this system sit on CAP?**
+A: It favors **AP** — availability + partition tolerance with **eventual consistency**.
+A user seeing a count that's a couple of seconds stale (pre-flush) or a suggestion list from
+a slightly old trie build is completely acceptable. We trade strong consistency for latency
+and availability, which is the correct trade-off for autocomplete.
+
+**Q: How would the search-counting pipeline look at scale (batch vs stream)?**
+A: Search events → **Kafka** → consumers do **windowed aggregation** (e.g. Spark/Flink) →
+periodically rebuild/patch the weighted trie that gets shipped to suggest servers. Often a
+**lambda architecture**: a **batch layer** rebuilds the authoritative trie nightly and a
+**speed layer** applies recent deltas for freshness. Our `buffer + periodic flush + Trie
+top-K update` is the same idea in miniature.
+
+**Q: Why batch writes instead of writing per search? (HLD framing)**
+A: It's **write coalescing** to protect the datastore: turn N writes for the same key into
+one, amortize index maintenance, and convert random per-request I/O into sequential batched
+I/O. The cost is **freshness lag** and a **crash window** (handled by the WAL). This is the
+generic "buffer + flush" / write-behind pattern.
+
+### 10.9 Top-K, trending, and probabilistic structures
+
+**Q: At billions of queries, how do you count popularity without storing every query?**
+A: Use **approximate, sublinear-memory** structures: a **Count-Min Sketch** to estimate
+frequencies in fixed memory (it overestimates, never underestimates) combined with a
+**min-heap of the current top-K** ("heavy hitters"). For cardinality you'd use
+**HyperLogLog**. We store exact counts because 100k–200k rows fit easily; I'd name CMS as the
+scale answer.
+
+**Q: How do you compute "trending" and avoid a one-day spike ranking forever?**
+A: Two standard approaches: **sliding-window counts** (bucketed counters that expire) or
+**exponential time decay** (this project: `score = score·0.5^(Δt/halfLife) + 1`). Decay is
+O(1) memory/update and forgets automatically because the score is decayed on read — old
+spikes halve every half-life and sink. Trade-off: decay never hits exactly zero and its units
+are less interpretable than "hits in the last hour."
+
+**Q: How would you add personalization or location-aware suggestions?**
+A: Blend a global ranking with a per-user/per-region signal: maintain smaller per-segment
+tries or re-rank the global top-K with a personalization score at request time (keep the heavy
+lifting offline). It's a re-ranking layer on top of the same top-K candidate generation.
+
+### 10.10 Latency, load balancing, availability
+
+**Q: How do you minimize end-to-end latency?**
+A: **Client:** debounce keystrokes (150 ms here) to cut request volume; cache responses in
+the browser. **Edge:** CDN/edge caches for very common prefixes. **Server:** in-RAM trie +
+distributed cache, no synchronous DB on the hot path. **Network:** keep responses tiny.
+Measure **p95/p99** (tail latency), not just averages — tails are what users feel.
+
+**Q: What load-balancing strategy would you use?**
+A: Stateless suggest servers behind **round-robin / least-connections**. If servers hold
+*different trie shards*, route by **consistent hashing on the prefix** so a prefix always hits
+the server that holds its shard (cache affinity). Add health checks + failover for availability.
+
+**Q: How do you make the service fault tolerant?**
+A: Stateless, replicated suggest servers (lose one, LB reroutes); cache nodes are rebuildable
+and the ring degrades gracefully on node loss; the datastore is replicated; the write pipeline
+uses a durable, replayable log (Kafka / our WAL). No single point of failure on the hot path.
+
+**Q: How would a Bloom filter help here?**
+A: A **Bloom filter** of known prefixes can cheaply reject prefixes that have *no*
+completions before doing any trie/cache work — useful to shed load from garbage/typo
+prefixes at scale (with the usual false-positive, never-false-negative caveat).
+
+**Q: One-line summary tying it together.**
+A: It's a **read-optimized, eventually-consistent** system: serve reads from a sharded
+in-RAM index fronted by a consistently-hashed distributed cache, and absorb writes through a
+durable, batched, write-behind pipeline — trading a little freshness for large gains in
+latency, availability, and datastore protection.
