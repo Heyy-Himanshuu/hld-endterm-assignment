@@ -8,7 +8,6 @@ and reduces database load with **batched writes**.
 
 > **Documentation map**
 > - **README.md** (this file) — setup, how to run, API reference.
-> - **[DECISIONS.md](DECISIONS.md)** — every design decision, the reasoning, and a viva Q&A bank. *Read this before the viva.*
 > - **[REPORT.md](REPORT.md)** — the formal project report (architecture, dataset, API docs, design trade-offs, performance).
 > - **[docs/architecture.md](docs/architecture.md)** — architecture diagrams.
 

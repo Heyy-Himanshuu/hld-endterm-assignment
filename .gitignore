@@ -6,3 +6,6 @@ data/
 *.log
 .DS_Store
 docs/screenshots/*.tmp
+
+# Personal viva-prep notes — kept local, not part of the submission
+DECISIONS.md

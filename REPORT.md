@@ -2,8 +2,7 @@
 
 This report covers the five required sections: (1) architecture, (2) dataset source
 and loading, (3) API documentation, (4) design choices and trade-offs, and
-(5) performance. Deeper reasoning and a viva Q&A bank are in
-[DECISIONS.md](DECISIONS.md).
+(5) performance.
 
 ---
 
@@ -155,8 +154,6 @@ Missing/empty `query` → `400 { "error": "query is required" }`.
 ---
 
 ## 4. Design choices and trade-offs
-
-Condensed here; full reasoning + alternatives in [DECISIONS.md](DECISIONS.md).
 
 | Decision | Why | Key trade-off |
 |---|---|---|
