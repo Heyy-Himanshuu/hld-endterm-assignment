@@ -50,7 +50,6 @@ suggestion.
 npm run dataset    # (re)download/generate data/queries.tsv
 npm run ingest     # (re)load data/queries.tsv into SQLite
 npm run benchmark  # performance report: p50/p95 latency, hit rate, write reduction, ring balance
-node scripts/screenshot.js   # capture UI screenshots (needs the server running + Chrome)
 ```
 
 ---
@@ -151,7 +150,6 @@ scripts/
   download-dataset.js       Wikipedia pageviews -> TSV (synthetic fallback)
   ingest.js                 TSV -> SQLite (normalize + aggregate)
   benchmark.js              performance report
-  screenshot.js             UI screenshots via system Chrome
 public/                     index.html, app.js, styles.css
 docs/                       architecture.md + screenshots/
 ```

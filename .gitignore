@@ -9,3 +9,6 @@ docs/screenshots/*.tmp
 
 # Personal viva-prep notes — kept local, not part of the submission
 DECISIONS.md
+
+# Dev-only screenshot helper (needs puppeteer-core) — kept local, not submitted
+scripts/screenshot.js
